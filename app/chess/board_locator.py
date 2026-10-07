@@ -261,11 +261,18 @@ class BoardLocator:
                 'width': region['width'],
                 'height': region['height']
             }
-            # 对TT平台：搜索区域左右各收缩25%，更聚焦棋盘区域
+            # 对TT平台：宽屏布局中棋盘位于窗口中央，因此左右各收缩25%。
+            # Windows 客户端也有窄版布局，此时窗口宽度基本就是棋盘宽度，
+            # 继续裁剪会丢失左右两列棋子，导致将帅/车兵组合定位失败。
             if window_info['platform'] == "TT":
-                quarter_w = int(search_region['width'] * 0.25)
-                search_region['left'] = int(search_region['left'] + quarter_w)
-                search_region['width'] = int(search_region['width'] - 2 * quarter_w)
+                aspect_ratio = search_region['width'] / max(search_region['height'], 1)
+                if aspect_ratio >= 1.2:
+                    quarter_w = int(search_region['width'] * 0.25)
+                    search_region['left'] = int(search_region['left'] + quarter_w)
+                    search_region['width'] = int(search_region['width'] - 2 * quarter_w)
+                    print(f"TT宽屏布局：左右各裁剪25%，宽高比={aspect_ratio:.2f}")
+                else:
+                    print(f"TT窄版布局：保留完整窗口宽度，宽高比={aspect_ratio:.2f}")
             # 对JJ平台：搜索区域上下各收缩15%
             elif window_info['platform'] == "JJ":
                 shrink_h = int(search_region['height'] * 0.15)
@@ -870,8 +877,18 @@ class BoardLocator:
             x, y, width, height = board_pos
             print(f"自动检测到棋盘坐标: ({x}, {y}, {width}, {height})")
         
-        # 棋盘区域
-        board_region = {'left': x, 'top': y, 'width': width, 'height': height}
+        # mss 在 Windows 上要求截图区域的所有值都是整数。自动定位使用平均值
+        # 计算坐标，结果通常为 float，因此在传给 mss 前统一取整。
+        board_region = {
+            'left': int(round(x)),
+            'top': int(round(y)),
+            'width': max(1, int(round(width))),
+            'height': max(1, int(round(height)))
+        }
+        x = board_region['left']
+        y = board_region['top']
+        width = board_region['width']
+        height = board_region['height']
         print(f"棋盘区域: left={x}, top={y}, width={width}, height={height}")
 
         # 截取棋盘区域的图片
@@ -950,18 +967,18 @@ class BoardLocator:
         
         # 计算头像区域
         avatar_regions['upper'] = {
-            'left': upper_x,
-            'top': upper_y,
-            'width': square_size,
-            'height': square_size
+            'left': int(round(upper_x)),
+            'top': int(round(upper_y)),
+            'width': max(1, int(round(square_size))),
+            'height': max(1, int(round(square_size)))
         }
         print(f"上头像区域: left={upper_x}, top={upper_y}, width={square_size}, height={square_size}")
         
         avatar_regions['lower'] = {
-            'left': lower_x,
-            'top': lower_y,
-            'width': square_size,
-            'height': square_size
+            'left': int(round(lower_x)),
+            'top': int(round(lower_y)),
+            'width': max(1, int(round(square_size))),
+            'height': max(1, int(round(square_size)))
         }
         print(f"下头像区域: left={lower_x}, top={lower_y}, width={square_size}, height={square_size}")
         

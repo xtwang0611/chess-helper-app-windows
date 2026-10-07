@@ -1,6 +1,10 @@
 
 # 象棋助手 (Chess Helper)
 
+> Windows 兼容适配版。基于 [YoungerIOS/chess-helper-app](https://github.com/YoungerIOS/chess-helper-app) 修改，感谢原作者 YoungerIOS 及原项目贡献者。
+>
+> 本分支新增 Windows 依赖清单、Pikafish Windows 引擎接入，以及天天象棋窄窗口和 Windows 截图坐标兼容。
+
 一款智能的中国象棋辅助工具，支持微信小程序平台 **JJ象棋** 和 **天天象棋** 直接使用，无需使用改造的官方客户端，无封号风险。利用计算机视觉技术和强大的Pikafish象棋引擎，为您提供实时的局势分析与着法推荐。
 
 ---
@@ -43,6 +47,7 @@
 ### 环境要求
 -   macOS 12+ (支持 Intel 与 Apple Silicon)
 -   Python 3.10+
+-   Windows 10/11（Windows 适配建议使用 Python 3.11）
 
 ### 快速开始
 -   下载安装客户端dmg文件
@@ -54,10 +59,45 @@
 -   运行`python app/main.py`即可使用
 -   如有需要，可以使用`pyinstaller ChessHelper.spec --noconfirm`打包客户端
 
+### Windows 运行方法
+
+1. 建议创建 Python 3.11 环境并安装 Windows 依赖：
+
+   ```powershell
+   conda create -n chess-helper python=3.11
+   conda activate chess-helper
+   pip install -r requirements-windows.txt
+   ```
+
+2. 从 [Pikafish 官方发布页](https://github.com/official-pikafish/Pikafish/releases) 下载 Windows x86-64 universal 版本，将文件整理为：
+
+   ```text
+   app/Pikafish/src/pikafish.exe
+   app/Pikafish/src/pikafish
+   app/Pikafish/src/pikafish.nnue
+   ```
+
+   其中无扩展名的 `pikafish` 可由 Windows 可执行文件复制得到：
+
+   ```powershell
+   Copy-Item '.\app\Pikafish\src\pikafish.exe' '.\app\Pikafish\src\pikafish'
+   ```
+
+3. 启动程序：
+
+   ```powershell
+   python .\app\main.py
+   ```
+
+Pikafish 文件不包含在本仓库中，请从官方项目获取。请仅将本项目用于合法、合规的学习和本地分析场景。
+
 ---
 
 ## 🤝 贡献与反馈
 欢迎提交 Issue 或 Pull Request 来帮助改进这个项目！
 
 ## 📄 许可证
-本项目采用 MIT 许可证。仅供学习交流使用，请勿用于商业用途或破坏游戏公平性。
+
+原项目及本项目代码采用根目录 `LICENSE` 所载的木兰宽松许可证第 2 版（Mulan PSL v2），并保留原项目的版权及免责声明。原 README 中的 MIT 表述与根目录许可证不一致，本适配版以根目录 `LICENSE` 为准。
+
+Pikafish 是独立的第三方项目，其引擎采用 GNU GPL v3；NNUE 权重文件另有其官方许可条件。分发或使用相关文件前，请查阅 [Pikafish 项目](https://github.com/official-pikafish/Pikafish) 和 [Networks 项目](https://github.com/official-pikafish/Networks) 的许可证说明。
