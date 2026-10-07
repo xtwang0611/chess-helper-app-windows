@@ -83,7 +83,9 @@ class BoardLocator:
         
         # 游戏窗口标题关键词
         self.game_titles = {
-            "JJ": ["JJ象棋"],
+            # Windows 微信小游戏容器的窗口标题通常只显示“小游戏”，
+            # 并不会包含实际运行的“JJ象棋”名称。
+            "JJ": ["JJ象棋", "小游戏"],
             "TT": ["天天象棋"]
         }
         self.window_size = None
@@ -145,7 +147,8 @@ class BoardLocator:
         matches = []
 
         def callback(hwnd, extra):
-            if _win32gui_module.IsWindowVisible(hwnd):
+            if (_win32gui_module.IsWindowVisible(hwnd)
+                    and not _win32gui_module.IsIconic(hwnd)):
                 title = _win32gui_module.GetWindowText(hwnd)
                 if keyword.lower() in title.lower():
                     rect = _win32gui_module.GetWindowRect(hwnd)
@@ -153,6 +156,9 @@ class BoardLocator:
                     x, y, right, bottom = rect
                     width = right - x
                     height = bottom - y
+                    # 排除最小化残留、工具窗口和浏览器后台小窗。
+                    if width < 300 or height < 300:
+                        return
                     matches.append({
                         "title": title,
                         "bounds": (x, y, width, height)
@@ -198,12 +204,18 @@ class BoardLocator:
                 
                 if matches:
                     score = 100  # 具体标题匹配
+
+                    # 游戏容器通常以游戏名称（或“小游戏”）作为完整标题；
+                    # 浏览器标签页可能只是在长标题中提到这些关键词。
+                    # 完整标题匹配应显著优先，避免把 GitHub/README 页面当成游戏。
+                    match = matches[0]
+                    if match['title'].strip().lower() == title.strip().lower():
+                        score += 100
                     
                     if p == platform_name:
                         score += 10  # 优先匹配当前请求的平台
                         
                     # 只取第一个匹配项（通常是最上层的）
-                    match = matches[0]
                     candidates.append({
                         'score': score,
                         'platform': p,
