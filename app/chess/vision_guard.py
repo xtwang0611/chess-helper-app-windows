@@ -96,31 +96,58 @@ def _best_regular_run(values: Sequence[int], count: int) -> Optional[list[int]]:
     return best if best_score <= 0.22 else None
 
 
+def _detect_board_outline(edges: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+    """Find the strong rectangular wooden board outline used by TT/JJ skins."""
+    h, w = edges.shape
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    candidates = []
+    for contour in contours:
+        area = float(cv2.contourArea(contour))
+        x, y, width, height = cv2.boundingRect(contour)
+        if width < w * 0.45 or height < h * 0.35 or height > h * 0.90:
+            continue
+        region = {"left": x, "top": y, "width": width, "height": height}
+        if not validate_board_region(region)[0]:
+            continue
+        rectangularity = area / max(1.0, width * height)
+        if rectangularity < 0.72:
+            continue
+        candidates.append((area, x, y, width, height))
+    if not candidates:
+        return None
+    _, x, y, width, height = max(candidates)
+    return x, y, width, height
+
+
 def detect_board_grid(image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
     """Locate a Xiangqi board from its regular 9-column/10-row grid."""
     valid, _ = frame_quality(image)
     if not valid:
         return None
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-    edges = cv2.Canny(gray, 45, 135)
-    h, w = gray.shape
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=max(35, min(w, h) // 8),
-                            minLineLength=max(70, min(w, h) // 3), maxLineGap=max(8, min(w, h) // 30))
+    raw_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    grid_gray = cv2.GaussianBlur(raw_gray, (3, 3), 0)
+    edges = cv2.Canny(grid_gray, 45, 135)
+    outline_edges = cv2.Canny(cv2.GaussianBlur(raw_gray, (5, 5), 0), 30, 100)
+    h, w = raw_gray.shape
+    # Xiangqi verticals are intentionally interrupted at the river and can be
+    # split again by pieces, so accept board-sized line segments rather than
+    # requiring a third of the (often portrait) game window height.
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=max(28, min(w, h) // 11),
+                            minLineLength=max(45, min(w, h) // 8), maxLineGap=max(8, min(w, h) // 24))
     if lines is None:
-        return None
+        return _detect_board_outline(outline_edges)
     vertical, horizontal = [], []
     for x1, y1, x2, y2 in lines[:, 0]:
         dx, dy = abs(x2 - x1), abs(y2 - y1)
-        if dy >= h * 0.28 and dx <= max(4, dy * 0.04):
+        if dy >= min(h * 0.12, w * 0.28) and dx <= max(4, dy * 0.04):
             vertical.append((x1 + x2) // 2)
-        elif dx >= w * 0.28 and dy <= max(4, dx * 0.04):
+        elif dx >= w * 0.24 and dy <= max(4, dx * 0.04):
             horizontal.append((y1 + y2) // 2)
     tolerance = max(3, min(w, h) // 150)
     xs = _best_regular_run(_cluster(vertical, tolerance), 9)
     ys = _best_regular_run(_cluster(horizontal, tolerance), 10)
     if xs is None or ys is None:
-        return None
+        return _detect_board_outline(outline_edges)
     sx, sy = float(np.median(np.diff(xs))), float(np.median(np.diff(ys)))
     if abs(sx - sy) / max(sx, sy) > 0.25:
         return None
@@ -131,4 +158,6 @@ def detect_board_grid(image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
     left, top = max(0, left), max(0, top)
     right, bottom = min(w, right), min(h, bottom)
     region = {"left": left, "top": top, "width": right - left, "height": bottom - top}
-    return (left, top, right - left, bottom - top) if validate_board_region(region)[0] else None
+    if validate_board_region(region)[0]:
+        return left, top, right - left, bottom - top
+    return _detect_board_outline(outline_edges)

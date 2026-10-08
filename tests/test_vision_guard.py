@@ -34,6 +34,33 @@ class VisionGuardTests(unittest.TestCase):
         self.assertLessEqual(abs(width - 9 * spacing), 8)
         self.assertLessEqual(abs(height - 10 * spacing), 8)
 
+    def test_detects_grid_with_river_break_and_piece_occlusion(self):
+        image = np.full((900, 500, 3), 190, dtype=np.uint8)
+        x0, y0, spacing = 38, 220, 53
+        for col in range(9):
+            x = x0 + col * spacing
+            cv2.line(image, (x, y0), (x, y0 + 4 * spacing), (35, 35, 35), 2)
+            cv2.line(image, (x, y0 + 5 * spacing), (x, y0 + 9 * spacing), (35, 35, 35), 2)
+        for row in range(10):
+            y = y0 + row * spacing
+            cv2.line(image, (x0, y), (x0 + 8 * spacing, y), (35, 35, 35), 2)
+        # Pieces hide portions of several grid lines in real endgames.
+        for center in [(x0 + spacing, y0 + spacing), (x0 + 4 * spacing, y0 + 2 * spacing),
+                       (x0 + 2 * spacing, y0 + 7 * spacing)]:
+            cv2.circle(image, center, 24, (205, 160, 90), -1)
+            cv2.circle(image, center, 24, (60, 60, 60), 2)
+        self.assertIsNotNone(detect_board_grid(image))
+
+    def test_detects_strong_board_outline_when_grid_is_obscured(self):
+        image = np.full((940, 500, 3), 85, dtype=np.uint8)
+        cv2.rectangle(image, (5, 200), (495, 748), (205, 155, 90), -1)
+        cv2.rectangle(image, (5, 200), (495, 748), (30, 30, 30), 3)
+        # Deliberately omit the grid; outline fallback must still find the board.
+        region = detect_board_grid(image)
+        self.assertIsNotNone(region)
+        self.assertLessEqual(abs(region[0] - 5), 4)
+        self.assertLessEqual(abs(region[1] - 200), 4)
+
 
 class SettlementDebounceTests(unittest.TestCase):
     def setUp(self):
