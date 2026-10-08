@@ -4,6 +4,8 @@ import cv2
 import numpy as np
 
 from app.chess.checker import PositionChecker
+from app.chess.processor import ChessProcess
+from app.chess.recognizer import RecognitionErrorType
 from app.chess.vision_guard import detect_board_grid, frame_contains_board, frame_quality, validate_board_region
 
 
@@ -93,6 +95,13 @@ class SettlementDebounceTests(unittest.TestCase):
         self.checker.check_settlement(None, False, frame_valid=False)
         self.checker.check_settlement(self.one_king, True)
         self.assertFalse(self.checker.in_settlement_screen)
+
+
+class RecognitionPolicyTests(unittest.TestCase):
+    def test_missing_marker_is_not_a_fatal_recognition_error(self):
+        self.assertFalse(ChessProcess._is_fatal_recognition_error(RecognitionErrorType.MARKER_MISSING))
+        self.assertFalse(ChessProcess._is_fatal_recognition_error(RecognitionErrorType.LOW_CONFIDENCE))
+        self.assertTrue(ChessProcess._is_fatal_recognition_error(RecognitionErrorType.COVERED))
 
 
 if __name__ == "__main__":

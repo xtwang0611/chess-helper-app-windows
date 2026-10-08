@@ -25,6 +25,15 @@ class BoardAnalysisState:
 
 class ChessProcess:
 
+    @staticmethod
+    def _is_fatal_recognition_error(error_type):
+        """Marker absence and low confidence are warnings, not frame killers."""
+        from app.chess.recognizer import RecognitionErrorType
+        return error_type not in (
+            RecognitionErrorType.MARKER_MISSING,
+            RecognitionErrorType.LOW_CONFIDENCE,
+        )
+
     @classmethod
     def from_context(cls, context): 
         """从全局上下文创建实例"""
@@ -137,13 +146,12 @@ class ChessProcess:
             # 处理其他识别错误 （排除错误中的允许情况，然后集中安排重试）
             fatal_errors = []
             for d in details:
-                # 无标记情形，允许新开局帧通过
+                # 落子标记只用于辅助验证走棋方。TT/JJ 的标记样式会变化，
+                # 且残局刚打开时可能根本没有标记；不能因此丢弃一个棋子
+                # 与将帅均可识别的有效棋盘帧。
                 if d.type == RecognitionErrorType.MARKER_MISSING:
-                     is_start_red = (board_array == self.checker.START_RED)
-                     is_start_black = (board_array == self.checker.START_BLACK)
-                     if is_start_red or is_start_black:
-                         logger.debug("忽视开局无标记警告")
-                         continue  
+                    logger.debug("未检测到落子标记，继续使用棋盘变化进行判断")
+                    continue
                 
                 # 低置信度情形，已经填充最佳猜测，允许通过，让后续的校验来判断
                 if d.type == RecognitionErrorType.LOW_CONFIDENCE:
@@ -151,7 +159,8 @@ class ChessProcess:
                     continue
                 
                 # 其他所有类型错误 (如 COVERED, UNKNOWN, MARKER_MISSING) ，默认丢帧重试
-                fatal_errors.append(d)
+                if self._is_fatal_recognition_error(d.type):
+                    fatal_errors.append(d)
 
             if fatal_errors:
                  logger.warning(f"识别结果不可用，丢弃当前帧: {fatal_errors}")
