@@ -10,6 +10,7 @@ from pynput import mouse
 from app.tools.utils import resource_path
 from app.chess.screenshot import ChessCaptureManager
 from app.chess.board_locator import BoardLocator
+from app.chess.vision_guard import validate_board_region
 from app.chess.engine import ChessEngine
 from app.chess.checker import PositionChecker
 from app.chess.history import MoveHistory
@@ -949,6 +950,7 @@ class ManualPositioner(QObject):
         # 手动定位相关状态
         self.positioning_step = 0  # 定位步骤：0-未开始，1-左上角，2-右下角
         self.positioning_coords = []  # 存储2个角的坐标
+        self.positioning_error = ""
     
     def start_positioning(self):
         """开始手动定位"""
@@ -966,7 +968,10 @@ class ManualPositioner(QObject):
         self.start_cursor_tracking()
         
         # 显示第一步提示
-        self.main_window.text_display.setText('<span style="color: red;">第1步：点击棋盘左上角顶点<br>右键点击可取消定位</span>')
+        self.main_window.text_display.setText(
+            '<span style="color: red;">第1步：点击木质棋盘外框左上角<br>'
+            '不要点击游戏窗口标题栏；右键可取消</span>'
+        )
         
         # 初始化图标
         self.main_window.update_icons()
@@ -1210,7 +1215,10 @@ class ManualPositioner(QObject):
             # 第1步：左上角
             self.positioning_coords.append((x, y))
             self.positioning_step = 2
-            self.main_window.text_display.setText('<span style="color: orange;">第2步：点击棋盘右下角顶点<br>右键点击可取消定位</span>')
+            self.main_window.text_display.setText(
+                '<span style="color: orange;">第2步：点击木质棋盘外框右下角<br>'
+                '不要包含头像、菜单或底部按钮</span>'
+            )
             
             # 确保定位点继续跟随光标
             if self.position_dot and self.follow_cursor:
@@ -1240,7 +1248,11 @@ class ManualPositioner(QObject):
                 self.main_window.text_display.setText('<span style="color: green;">2角定位完成!</span>')
             else:
                 # 定位失败，显示错误信息
-                self.main_window.text_display.setText('<span style="color: red;">2角定位失败，请重试</span>')
+                detail = self.positioning_error or "区域无效"
+                self.main_window.text_display.setText(
+                    f'<span style="color: red;">手动定位失败：{detail}<br>'
+                    '请只框选木质棋盘区域</span>'
+                )
                 # 重置定位状态，允许重新开始
                 self.positioning_step = 0
                 self.positioning_coords = []
@@ -1252,27 +1264,41 @@ class ManualPositioner(QObject):
             return False
         
         # 解包2个角的坐标
-        left_top = self.positioning_coords[0]
-        right_bottom = self.positioning_coords[1]
+        first = self.positioning_coords[0]
+        second = self.positioning_coords[1]
         
         # 计算棋盘区域
-        x = left_top[0]  # 左上角x坐标
-        y = left_top[1]  # 左上角y坐标
-        width = right_bottom[0] - left_top[0]  # 宽度
-        height = right_bottom[1] - left_top[1]  # 高度
+        x = min(first[0], second[0])
+        y = min(first[1], second[1])
+        width = abs(second[0] - first[0])
+        height = abs(second[1] - first[1])
         
         # 验证棋盘尺寸的合理性
         if width < 200 or height < 200:
             print(f"棋盘尺寸过小: {width}x{height}")
+            self.positioning_error = f"棋盘尺寸过小（{width}×{height}）"
             return False
-        
-        # 创建棋盘区域配置（使用x, y, width, height格式）
+
+        # 使用与自动定位、mss 截图一致的 left/top 格式。
         board_region = {
-            'x': x,
-            'y': y,
+            'left': x,
+            'top': y,
             'width': width,
             'height': height
         }
+
+        window_info = self.main_window.platform_detector.find_game_window(self.context.platform)
+        window_region = window_info.get('region') if window_info else None
+        valid, reason = validate_board_region(board_region, window_region)
+        if not valid:
+            reason_text = {
+                'too-small': '棋盘尺寸过小',
+                'outside-window': '选择区域超出游戏窗口',
+                'whole-window': '选择了整个游戏窗口',
+            }.get(reason, '宽高比不符合棋盘')
+            self.positioning_error = f"{reason_text}（{width}×{height}）"
+            print(f"手动棋盘区域无效: {reason}, region={board_region}")
+            return False
         
         try:
             # 更新当前平台的棋盘区域配置
@@ -1283,6 +1309,7 @@ class ManualPositioner(QObject):
             self.context.manual_coords = manual_coords
             # 保存配置
             self.context.save_config()
+            self.positioning_error = ""
             
             print(f"2角定位成功，棋盘区域: {board_region}")
             return True
