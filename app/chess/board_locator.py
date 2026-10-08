@@ -39,6 +39,7 @@ from app.chess.recognizer import ChessRecognizer
 from app.chess.message import Message, MessageType
 from app.chess.message_bus import message_bus
 from app.chess.border_detector import reset_border_cache
+from app.chess.vision_guard import detect_board_grid, frame_quality, validate_board_region
 
 # 跨平台窗口检测
 WIN32GUI_AVAILABLE = False
@@ -823,6 +824,41 @@ class BoardLocator:
 
         return (board_x, board_y, board_width, board_height)
 
+    def _locate_board_from_grid(self):
+        """Fallback locator based only on the regular board grid/outline."""
+        window_info = self.find_game_window(self.context.platform)
+        if not window_info:
+            raise WindowError("未检测到游戏窗口")
+        window = window_info['region']
+        with mss.mss() as sct:
+            shot = sct.grab(window)
+        image = np.frombuffer(shot.bgra, np.uint8).reshape(shot.height, shot.width, 4)[:, :, :3].copy()
+        quality_ok, reason = frame_quality(image)
+        if not quality_ok:
+            # Transient mss black/blank frames are retryable, not a fatal
+            # configuration/location failure.
+            raise PieceError(f"游戏窗口截图异常，等待重试: {reason}")
+        located = detect_board_grid(image)
+        if located is None:
+            raise CombsError("棋子组合和棋盘网格定位均失败")
+        x, y, width, height = located
+        result = (window['left'] + x, window['top'] + y, width, height)
+        region = {'left': result[0], 'top': result[1], 'width': width, 'height': height}
+        valid, reason = validate_board_region(region, window)
+        if not valid:
+            raise LocationError(f"网格定位结果无效: {reason}")
+        self.base_width = width * 8 / 9
+        self.base_height = height * 9 / 10
+        self.logger.info(f"残局回退：通过棋盘网格定位 {region}")
+        return result
+
+    def _locate_board(self):
+        try:
+            return self._locate_board_from_combs()
+        except (PieceError, CombsError) as exc:
+            self.logger.warning(f"棋子组合定位失败，尝试网格定位: {exc}")
+            return self._locate_board_from_grid()
+
     def _process_circles(self, circles, img_np):
         """处理圆检测（单线程版本，避免模型访问冲突）"""
         piece_centers = []
@@ -885,7 +921,7 @@ class BoardLocator:
             print(f"使用手动坐标: ({x}, {y}, {width}, {height})")
         else:
             # 自动定位模式：检测棋盘位置
-            board_pos = self._locate_board_from_combs()
+            board_pos = self._locate_board()
             x, y, width, height = board_pos
             print(f"自动检测到棋盘坐标: ({x}, {y}, {width}, {height})")
         
@@ -897,6 +933,11 @@ class BoardLocator:
             'width': max(1, int(round(width))),
             'height': max(1, int(round(height)))
         }
+        window_info = self.find_game_window(self.context.platform)
+        window_region = window_info['region'] if window_info else None
+        valid, reason = validate_board_region(board_region, window_region)
+        if not valid:
+            raise LocationError(f"拒绝无效棋盘区域: {reason}, region={board_region}")
         x = board_region['left']
         y = board_region['top']
         width = board_region['width']
@@ -909,6 +950,9 @@ class BoardLocator:
             board_screenshot = sct.grab(board_region)
             board_img = np.frombuffer(board_screenshot.bgra, np.uint8).reshape(board_screenshot.height, board_screenshot.width, 4)
             board_img = board_img[:, :, :3]
+            quality_ok, reason = frame_quality(board_img)
+            if not quality_ok:
+                raise PieceError(f"棋盘截图异常，等待重试: {reason}")
             cv2.imwrite(app_cache_path('board/board.png'), board_img)
             
             # 将棋盘图片按宽度800缩放

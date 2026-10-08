@@ -9,6 +9,7 @@ from pprint import pformat
 from typing import Tuple, Optional, Dict, Any, List
 from dataclasses import dataclass
 import threading, queue, time
+from app.chess.vision_guard import frame_quality, screenshot_to_bgr
 
 logger = get_logger(__name__)
 
@@ -57,6 +58,16 @@ class ChessProcess:
         
     def _process_image(self, img, capture_time=0.0):
         """主流程入口，处理图像并返回相应消息"""
+        try:
+            frame_valid, quality_reason = frame_quality(screenshot_to_bgr(img))
+        except (ValueError, TypeError) as exc:
+            frame_valid, quality_reason = False, str(exc)
+        if not frame_valid:
+            logger.warning(f"丢弃异常截图，不参与结算判断: {quality_reason}")
+            with self.context._checker_lock:
+                self.checker.check_settlement(None, False, frame_valid=False)
+            message_bus.publish(Message(MessageType.RETRY_CAPTURE, f"截图异常: {quality_reason}"))
+            return BoardAnalysisState(timestamp=capture_time)
         # 1. 识别棋盘和棋子 (同时获取标记)
         board, marker_coords, grid_hashes, is_massive_change = self._recognize_pieces(img)
         
@@ -64,7 +75,7 @@ class ChessProcess:
         history_moves = self.history.get_moves_str() if self.history else ""
         with self.context._checker_lock:
             # 2.1 结算画面检测（包括 board=None 的情况）
-            if self.checker.check_settlement(board, is_massive_change):
+            if self.checker.check_settlement(board, is_massive_change, frame_valid=True):
                 return BoardAnalysisState(timestamp=capture_time, is_settlement_screen=True)
             
             # 识别失败且不在结算状态，直接返回

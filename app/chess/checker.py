@@ -74,6 +74,10 @@ class PositionChecker:
         self.consecutive_drops = 0 # 连续丢帧重拍计数(防卡死)
         self.consecutive_mismatches = 0 # 连续历史校验不一致计数
         self.in_settlement_screen = False  # 是否处于结算画面状态
+        self.settlement_candidate_frames = 0
+        self.valid_board_frames = 0
+        self.settlement_confirm_frames = 3
+        self.settlement_recover_frames = 2
         
         # 优化：模拟状态缓存
         self._sim_cache = {
@@ -94,6 +98,8 @@ class PositionChecker:
         self.consecutive_drops = 0
         self.consecutive_mismatches = 0
         self.in_settlement_screen = False  # 重置结算状态
+        self.settlement_candidate_frames = 0
+        self.valid_board_frames = 0
         
         # 清空备份
         self._backup_last_board = None 
@@ -102,7 +108,7 @@ class PositionChecker:
         # 清空缓存
         self._sim_cache = { 'base_fen': None, 'moves_str': None, 'board': None }
     
-    def check_settlement(self, board_array, is_massive_change):
+    def check_settlement(self, board_array, is_massive_change, frame_valid=True):
         """
         检测是否为结算画面
         Args:
@@ -111,15 +117,15 @@ class PositionChecker:
         Returns:
             bool: True 表示是结算画面，需要发送 NON_GAME_SCREEN 消息
         """
-        # 识别失败时，如果已在结算状态，保持结算状态
-        if board_array is None:
-            if self.in_settlement_screen:
-                logger.debug("识别失败，保持结算画面状态")
-                return True
-            return False
+        # 黑屏、遮挡、异常截图和普通识别失败都不是结算证据。
+        if not frame_valid or board_array is None:
+            self.settlement_candidate_frames = 0
+            self.valid_board_frames = 0
+            return self.in_settlement_screen
         
         # 快速路径：既没有巨大变化，也不在结算状态，无需检测
         if not is_massive_change and not self.in_settlement_screen:
+            self.settlement_candidate_frames = 0
             return False
         
         # 需要检测时才统计将帅数量
@@ -127,30 +133,25 @@ class PositionChecker:
         general_count = sum(1 for row in board_array for piece in row if piece == 'K')
         kings_missing = (king_count != 1 or general_count != 1)
         
-        if kings_missing:
-            # 将帅丢失
-            if is_massive_change:
-                # 巨大变化 + 将帅丢失 = 进入结算状态
+        if kings_missing and is_massive_change:
+            self.valid_board_frames = 0
+            self.settlement_candidate_frames += 1
+            if self.settlement_candidate_frames >= self.settlement_confirm_frames:
                 self.in_settlement_screen = True
-                logger.debug(f"进入结算画面 (巨大变化 + 将{king_count}个/帅{general_count}个)")
-            
-            if self.in_settlement_screen:
-                # 已在结算状态
-                logger.debug("保持结算画面状态")
-                self.consecutive_drops = 0  # 重置丢帧计数
-                return True
+                self.consecutive_drops = 0
+                logger.info(f"连续{self.settlement_candidate_frames}帧确认结算画面")
+            return self.in_settlement_screen
         else:
-            # 将帅存在
-            if self.in_settlement_screen:
-                # 从结算状态恢复（新对局开始）
-                logger.debug("将帅恢复，退出结算状态")
-                self.in_settlement_screen = False
-            
-            if is_massive_change:
-                # 巨大变化 + 将帅存在 = 可能是新对局
-                logger.debug("检测到巨大变化但将帅存在，可能是新对局")
+            self.settlement_candidate_frames = 0
+            if not kings_missing:
+                self.valid_board_frames += 1
+                if self.in_settlement_screen and self.valid_board_frames >= self.settlement_recover_frames:
+                    logger.info("连续有效棋盘帧，退出结算状态")
+                    self.in_settlement_screen = False
+            else:
+                self.valid_board_frames = 0
         
-        return False
+        return self.in_settlement_screen
 
     def force_sync_board(self, board_array):
         """强制同步棋盘状态（用于处理连续非法帧导致的卡死）"""

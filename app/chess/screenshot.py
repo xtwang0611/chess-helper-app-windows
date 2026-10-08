@@ -10,13 +10,14 @@ from app.tools.utils import app_cache_path
 from app.tools.log_config import get_logger
 from app.chess.board_locator import BoardLocator, LocationError, WindowError, PieceError, CombsError
 from app.chess.hash_checker import filter_stable_frame
+from app.chess.vision_guard import frame_quality, screenshot_to_bgr, validate_board_region
 
 logger = get_logger(__name__)
 
 
 class ChessCaptureManager:
     """象棋捕获管理器类，负责截图、发送识别"""
-    
+
     def __init__(self):
         self.context = context
         self.manual_trigger = False  # 手动触发标志
@@ -157,9 +158,17 @@ class ChessCaptureManager:
         Returns:
             bool: 是否成功入队
         """
+        valid_region, reason = validate_board_region(region)
+        if not valid_region:
+            logger.warning(f"拒绝无效棋盘截图区域: {reason}, region={region}")
+            return False
         capture_time = time.time_ns()
         with mss.mss() as sct:
             board_screenshot = sct.grab(region)
+        quality_ok, reason = frame_quality(screenshot_to_bgr(board_screenshot))
+        if not quality_ok:
+            logger.warning(f"忽略异常截图并等待重试: {reason}")
+            return False
         
         # 使用全局函数处理截图
         stable_frame, curr_hash = filter_stable_frame(board_screenshot, "[capture]", force_output=force_output)
@@ -188,10 +197,20 @@ class ChessCaptureManager:
                     print("警告：连续截图模式下棋盘区域未配置，跳过本次截图")
                     time.sleep(interval)
                     continue
+                valid_region, reason = validate_board_region(board_region)
+                if not valid_region:
+                    logger.warning(f"连续截图区域无效，跳过: {reason}, region={board_region}")
+                    time.sleep(interval)
+                    continue
                 
                 capture_time = time.time_ns()
                 with mss.mss() as sct:
                     board_screenshot = sct.grab(board_region)
+                quality_ok, reason = frame_quality(screenshot_to_bgr(board_screenshot))
+                if not quality_ok:
+                    logger.warning(f"[continuous] 异常帧({reason})，不入队")
+                    time.sleep(interval)
+                    continue
                 
                 # 使用全局函数处理截图
                 stable_frame, curr_hash = filter_stable_frame(board_screenshot, "[continuous]")
@@ -277,4 +296,3 @@ class ChessCaptureManager:
         except Exception as e:
             print(f"执行单次截图流程失败: {e}")
             return False
-    
