@@ -9,7 +9,7 @@ from pprint import pformat
 from typing import Tuple, Optional, Dict, Any, List
 from dataclasses import dataclass
 import threading, queue, time
-from app.chess.vision_guard import frame_quality, screenshot_to_bgr
+from app.chess.vision_guard import frame_contains_board, frame_quality, screenshot_to_bgr
 
 logger = get_logger(__name__)
 
@@ -59,7 +59,8 @@ class ChessProcess:
     def _process_image(self, img, capture_time=0.0):
         """主流程入口，处理图像并返回相应消息"""
         try:
-            frame_valid, quality_reason = frame_quality(screenshot_to_bgr(img))
+            frame_image = screenshot_to_bgr(img)
+            frame_valid, quality_reason = frame_quality(frame_image)
         except (ValueError, TypeError) as exc:
             frame_valid, quality_reason = False, str(exc)
         if not frame_valid:
@@ -67,6 +68,12 @@ class ChessProcess:
             with self.context._checker_lock:
                 self.checker.check_settlement(None, False, frame_valid=False)
             message_bus.publish(Message(MessageType.RETRY_CAPTURE, f"截图异常: {quality_reason}"))
+            return BoardAnalysisState(timestamp=capture_time)
+        if not frame_contains_board(frame_image):
+            logger.warning("丢弃被遮挡或不含棋盘的截图，不参与识别和结算判断")
+            with self.context._checker_lock:
+                self.checker.check_settlement(None, False, frame_valid=False)
+            message_bus.publish(Message(MessageType.RETRY_CAPTURE, "棋盘被遮挡或截图区域失效"))
             return BoardAnalysisState(timestamp=capture_time)
         # 1. 识别棋盘和棋子 (同时获取标记)
         board, marker_coords, grid_hashes, is_massive_change = self._recognize_pieces(img)

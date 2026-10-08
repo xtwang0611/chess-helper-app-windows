@@ -83,17 +83,45 @@ def _best_regular_run(values: Sequence[int], count: int) -> Optional[list[int]]:
     values = sorted(values)
     if len(values) < count:
         return None
+    # UI decorations and piece edges add spurious parallel lines between true
+    # grid lines. Test arithmetic-progression hypotheses instead of requiring
+    # the wanted coordinates to be adjacent in the sorted candidate list.
     best, best_score = None, float("inf")
-    for start in range(len(values) - count + 1):
-        run = values[start:start + count]
-        gaps = np.diff(run).astype(float)
-        mean = float(gaps.mean())
-        if mean < 12:
-            continue
-        score = float(gaps.std() / mean)
-        if score < best_score:
-            best, best_score = run, score
-    return best if best_score <= 0.22 else None
+    data = np.asarray(values, dtype=float)
+    for first in values:
+        for last in values:
+            spacing = (last - first) / float(count - 1)
+            if spacing < 12:
+                continue
+            tolerance = max(4.0, spacing * 0.18)
+            selected = []
+            errors = []
+            used = set()
+            for index in range(count):
+                target = first + index * spacing
+                order = np.argsort(np.abs(data - target))
+                match = next((int(i) for i in order if int(i) not in used), None)
+                if match is None or abs(data[match] - target) > tolerance:
+                    break
+                used.add(match)
+                selected.append(int(data[match]))
+                errors.append(abs(data[match] - target) / spacing)
+            if len(selected) != count:
+                continue
+            score = float(np.mean(errors) + np.std(np.diff(selected)) / spacing)
+            if score < best_score:
+                best, best_score = selected, score
+    return best if best_score <= 0.20 else None
+
+
+def frame_contains_board(image: np.ndarray) -> bool:
+    """Return whether a captured board region still visually contains a board."""
+    located = detect_board_grid(image)
+    if located is None:
+        return False
+    x, y, width, height = located
+    frame_h, frame_w = image.shape[:2]
+    return width >= frame_w * 0.78 and height >= frame_h * 0.78
 
 
 def _detect_board_outline(edges: np.ndarray) -> Optional[Tuple[int, int, int, int]]:

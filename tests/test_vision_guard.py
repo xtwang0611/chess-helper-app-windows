@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 
 from app.chess.checker import PositionChecker
-from app.chess.vision_guard import detect_board_grid, frame_quality, validate_board_region
+from app.chess.vision_guard import detect_board_grid, frame_contains_board, frame_quality, validate_board_region
 
 
 class VisionGuardTests(unittest.TestCase):
@@ -60,6 +60,13 @@ class VisionGuardTests(unittest.TestCase):
         self.assertIsNotNone(region)
         self.assertLessEqual(abs(region[0] - 5), 4)
         self.assertLessEqual(abs(region[1] - 200), 4)
+
+    def test_board_frame_guard_rejects_unrelated_text_content(self):
+        image = np.full((540, 490, 3), 250, dtype=np.uint8)
+        for y in range(40, 500, 55):
+            cv2.putText(image, "not a chess board", (15, y), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7, (30, 30, 30), 2)
+        self.assertFalse(frame_contains_board(image))
 
 
 class SettlementDebounceTests(unittest.TestCase):

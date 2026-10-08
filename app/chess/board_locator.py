@@ -39,7 +39,7 @@ from app.chess.recognizer import ChessRecognizer
 from app.chess.message import Message, MessageType
 from app.chess.message_bus import message_bus
 from app.chess.border_detector import reset_border_cache
-from app.chess.vision_guard import detect_board_grid, frame_quality, validate_board_region
+from app.chess.vision_guard import detect_board_grid, frame_contains_board, frame_quality, validate_board_region
 
 # 跨平台窗口检测
 WIN32GUI_AVAILABLE = False
@@ -953,6 +953,8 @@ class BoardLocator:
             quality_ok, reason = frame_quality(board_img)
             if not quality_ok:
                 raise PieceError(f"棋盘截图异常，等待重试: {reason}")
+            if not frame_contains_board(board_img):
+                raise PieceError("棋盘被遮挡或手动选择区域不包含完整棋盘")
             cv2.imwrite(app_cache_path('board/board.png'), board_img)
             
             # 将棋盘图片按宽度800缩放
