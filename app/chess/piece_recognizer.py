@@ -23,8 +23,12 @@ class ChessPieceRecognizer:
             self.class_map = json.load(f)
         
         # 创建 ONNX Runtime 推理会话 w/ CPUExecutionProvider (避免依赖 CoreML/CUDA)
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = 2
+        options.inter_op_num_threads = 1
         self.session = ort.InferenceSession(
             self.model_path, 
+            sess_options=options,
             providers=['CPUExecutionProvider'] 
         )
         self.input_name = self.session.get_inputs()[0].name
@@ -90,7 +94,8 @@ class ChessPieceRecognizer:
             return {
                 'class_name': predicted_class,
                 'confidence': float(confidence),
-                'class_index': int(predicted_idx)
+                'class_index': int(predicted_idx),
+                'probabilities': {self.class_map[str(i)]: float(p) for i, p in enumerate(probabilities)}
             }
         except Exception as e:
             print(f"内存图像识别时出错: {str(e)}")
@@ -142,7 +147,8 @@ class ChessPieceRecognizer:
                 results[base_idx] = {
                     'class_name': predicted_class,
                     'confidence': float(confidence),
-                    'class_index': int(predicted_idx)
+                    'class_index': int(predicted_idx),
+                    'probabilities': {self.class_map[str(i)]: float(p) for i, p in enumerate(probabilities)}
                 }
                 
         except Exception as e:

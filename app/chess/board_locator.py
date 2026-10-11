@@ -953,8 +953,12 @@ class BoardLocator:
             quality_ok, reason = frame_quality(board_img)
             if not quality_ok:
                 raise PieceError(f"棋盘截图异常，等待重试: {reason}")
-            if not frame_contains_board(board_img):
-                raise PieceError("棋盘被遮挡或手动选择区域不包含完整棋盘")
+            from app.chess.grid_recognition import calibrate_grid
+            normalized = cv2.resize(board_img, (800, round(height * 800 / width)))
+            coords = self.context.board_coords
+            grid_x, grid_y, grid_supported = calibrate_grid(normalized, coords['x'], coords['y'])
+            if not grid_supported and not frame_contains_board(board_img):
+                raise PieceError("暂未确认棋盘网格，请检查定位范围或等待画面稳定")
             cv2.imwrite(app_cache_path('board/board.png'), board_img)
             
             # 将棋盘图片按宽度800缩放
@@ -964,7 +968,7 @@ class BoardLocator:
             scaled_board_img = cv2.resize(board_img, (target_width, target_height))
             
             # 在缩放后的棋盘图片上绘制网格线
-            self._draw_grid_on_board_image(scaled_board_img)
+            self._draw_grid_on_board_image(scaled_board_img, {'x': grid_x, 'y': grid_y})
             # 保存带网格线的缩放棋盘图片
             cv2.imwrite(app_cache_path('board/board_with_grid.png'), scaled_board_img)
 
@@ -1054,13 +1058,17 @@ class BoardLocator:
                     cv2.imwrite(app_cache_path(f'board/avatar_{pos}_rect.png'), rect_img_np)
 
             # 统一更新当前平台的区域配置（绝对坐标）
-            platform = self.context.get_platform(self.context.platform)
-            platform.regions = {
-                "board": board_region,
-                "avatar_upper": avatar_regions.get("upper"),
-                "avatar_lower": avatar_regions.get("lower")
-            }
-            self.context.save_config()
+            with self.context.pipeline_lock:
+                if self.stop_event.is_set():
+                    raise LocationError("定位已停止")
+                platform = self.context.get_platform(self.context.platform)
+                platform.regions = {
+                    "board": board_region,
+                    "avatar_upper": avatar_regions.get("upper"),
+                    "avatar_lower": avatar_regions.get("lower")
+                }
+                self.context.reset_pipeline()
+                self.context.save_config()
             return board_region
 
     def handle_locating_board_tasks(self, message_type=None, data=None, moved_coords=None, fallback_coords=None):
@@ -1093,6 +1101,13 @@ class BoardLocator:
                 self.update_board_and_avatars_regions(coords=moved_coords)
                 print("棋盘定位成功(窗口移动)")
                 msg = "已重新计算棋盘位置"
+            elif self.context.manual_coords is not None and fallback_coords is None:
+                try:
+                    self.update_board_and_avatars_regions(coords=self.context.manual_coords)
+                    msg = "手动棋盘区域已确认"
+                except LocationError:
+                    self.update_board_and_avatars_regions(coords=None)
+                    msg = "手动区域已失效，已重新定位"
             else:
                 # 优先尝试自动定位
                 try:
@@ -1119,7 +1134,8 @@ class BoardLocator:
                             raise
             
             # 发送成功消息
-            message_bus.publish_status(msg)
+            if not self.stop_event.is_set():
+                message_bus.publish_status(msg)
             # 设置定位成功事件（唤醒等待）
             self._located_event.set()
             return True
@@ -1230,8 +1246,7 @@ class BoardLocator:
                                         self.handle_locating_board_tasks(moved_coords=move_region)
 
                                 reset_border_cache(self.context.platform)
-                                # 重置检查器状态，确保重新定位后能正常分析新局面
-                                self.context.reset_checker()
+                                # Region publication atomically resets the pipeline above.
                                 # 成功后更新基准为当前稳定的窗口边界，并清空待处理标志
                                 baseline_bounds = last_seen_bounds
                                 # 成功后刷新基准棋盘区域
@@ -1260,7 +1275,7 @@ class BoardLocator:
                 # 若未找到窗口，跳过
             time.sleep(0.1)
 
-    def _draw_grid_on_board_image(self, board_img):
+    def _draw_grid_on_board_image(self, board_img, calibrated_coords=None):
         """
         在棋盘图片上绘制网格线（包含两种y坐标计算方法对比）
         
@@ -1273,7 +1288,7 @@ class BoardLocator:
                 print("警告：context中没有board_coords，无法绘制网格线")
                 return
             
-            board_coords = self.context.board_coords
+            board_coords = calibrated_coords or self.context.board_coords
             # my_x_coords = [45, 134, 223, 311, 400, 489, 578, 667, 756]
             # my_y_coords = [44, 130, 216, 302, 388, 474, 560, 646, 732, 818]
             # x_coords = my_x_coords

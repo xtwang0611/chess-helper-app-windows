@@ -410,7 +410,8 @@ class PositionChecker:
                     if p == 'K': red_k = (r, c)
                     if p == 'k': black_k = (r, c)
             if not (red_k and black_k and red_k[1] == black_k[1]): return False
-            return count_pieces_between(red_k[0], red_k[1], black_k[0], black_k[1]) == 0
+            first, last = sorted((red_k[0], black_k[0]))
+            return all(board[r][red_k[1]] == '-' for r in range(first + 1, last))
 
         # --- Main Logic ---
         if step_info:
@@ -421,6 +422,12 @@ class PositionChecker:
             piece = a1[src[0]][src[1]]
 
         target = a1[dst[0]][dst[1]]
+
+        expected = [row[:] for row in a1]
+        expected[dst[0]][dst[1]] = piece
+        expected[src[0]][src[1]] = '-'
+        if expected != a2:
+            return False
 
         if piece == '-' or same_side(piece, target): return False
 

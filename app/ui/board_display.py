@@ -30,6 +30,7 @@ class BoardCanvas(QLabel):
         self.margin_bottom = 21 # 32 -> 26
         
         self.pieces = []  # 存储当前棋盘上的棋子
+        self.uncertain = []
         self.board_size = (9, 10)  # 象棋棋盘大小
         self.cell_size = 0  
         self.margin = 20  
@@ -138,6 +139,13 @@ class BoardCanvas(QLabel):
         cell_height = scaled_board.height() / height_units
         inner_left = x + self.border_ratio_x * cell_width
         inner_top = y + self.border_ratio_y * cell_height
+
+        painter.setPen(QPen(QColor("#e9a23b"), 2, Qt.DashLine))
+        for row, col in self.uncertain:
+            center = QPointF(inner_left + col * cell_width, inner_top + row * cell_height)
+            painter.drawEllipse(center, cell_width * .44, cell_height * .44)
+            painter.drawText(QRect(int(center.x() - cell_width / 2), int(center.y() - cell_height / 2),
+                                  int(cell_width), int(cell_height)), Qt.AlignCenter, "?")
         
         # ... (后续绘制棋子、标记的逻辑保持不变)
         
@@ -292,7 +300,9 @@ class BoardCanvas(QLabel):
             
     def update_arrow(self, move, is_red):
         self.move_arrow = None
-        if not move or len(move) != 4: return
+        if not move or len(move) != 4:
+            self.update()
+            return
         start_col = ord(move[0]) - ord('a')
         start_row = int(move[1])
         end_col = ord(move[2]) - ord('a')
@@ -306,13 +316,15 @@ class BoardCanvas(QLabel):
         self.move_arrow = ((start_row, start_col), (end_row, end_col)) # Fixed type to tuple of tuples
         self.update()
 
-    def update_pieces(self, array):
+    def update_pieces(self, array, uncertain=None):
+        uncertainty_changed = self.uncertain != (uncertain or [])
+        self.uncertain = uncertain or []
         new_pieces = []
         for y in range(10):
             for x in range(9):
                 piece = array[y][x]
                 if piece and piece != '-': new_pieces.append((piece, x, y))
-        if self.pieces == new_pieces: return
+        if self.pieces == new_pieces and not uncertainty_changed: return
         self.move_arrow = None
         self.move_from = None
         self.move_to = None
@@ -342,6 +354,7 @@ class BoardCanvas(QLabel):
     
     def clear_board(self):
         self.pieces = []
+        self.uncertain = []
         self.move_arrow = None
         self.move_from = None
         self.move_to = None
@@ -394,6 +407,9 @@ class BoardDisplay(QWidget):
         self.board_canvas.raise_()
 
     # 代理方法，让外部调用像以前一样
+    def update_pieces(self, *args, **kwargs):
+        self.board_canvas.update_pieces(*args, **kwargs)
+
     def update_board(self, *args, **kwargs):
         self.board_canvas.update_board(*args, **kwargs)
         

@@ -23,17 +23,17 @@ class MessageBus:
     
     def publish(self, message: Message):
         """发布消息"""
-        if self._ui_queue:
+        if self._ui_queue is not None and message.type != MessageType.RETRY_CAPTURE:
             self._ui_queue.put(message)
         
         # 同时通知订阅者
         with self._lock:
-            subscribers = self._subscribers.get(message.type, [])
-            for callback in subscribers:
-                try:
-                    callback(message)
-                except Exception as e:
-                    print(f"消息订阅者回调失败: {e}")
+            subscribers = list(self._subscribers.get(message.type, []))
+        for callback in subscribers:
+            try:
+                callback(message)
+            except Exception as e:
+                print(f"消息订阅者回调失败: {e}")
     
     def subscribe(self, message_type: MessageType, callback: Callable[[Message], None]):
         """订阅特定类型的消息"""

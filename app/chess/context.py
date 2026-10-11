@@ -4,7 +4,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, Optional, List
 from datetime import datetime
-from threading import Lock
+from threading import Lock, RLock
+import time
+from app.chess.session import BoardSession
 from app.tools import utils
 from app.chess.history import MoveHistory 
 
@@ -15,7 +17,7 @@ def setup_logging():
         return logging.getLogger('chess')
     
     # 创建日志目录
-    log_dir = os.path.expanduser("~/Library/Logs/chess-helper-app")
+    log_dir = os.environ.get("CHESS_HELPER_LOG_DIR", os.path.expanduser("~/Library/Logs/chess-helper-app"))
     os.makedirs(log_dir, exist_ok=True)
     
     # 读取日志配置
@@ -118,7 +120,9 @@ class ChessContext:
     _manual_coords: Optional[tuple] = None  # 手动定位坐标 (x, y, width, height)
     base_fen: Optional[str] = None # 用于历史中断时的锚点FEN (持久化存储)
     analysis_token: int = 0  # 引擎分析令牌，用于废弃过期的回调
-    discard_before_timestamp: float = 0.0  # RETRY时设置，过滤在此时间之前截图的帧
+    pipeline_lock: object = field(default_factory=RLock)
+    session: object = field(default_factory=BoardSession)
+    discard_before_timestamp: int = 0  # time.time_ns(), same unit as capture timestamps
     _theme: str = "light"  # 当前主题
     
     
@@ -264,8 +268,11 @@ class ChessContext:
         # 获取目标平台
         platform = self._platforms[platform_name]
         
-        # 更新当前平台信息
-        self.platform = platform_name
+        with self.pipeline_lock:
+            if self.platform != platform_name:
+                self.platform = platform_name
+                self.manual_coords = None
+                self.reset_pipeline()
         
         # 保存配置
         self.save_config()
@@ -368,9 +375,35 @@ class ChessContext:
 
     def reset_checker(self) -> None:
         """线程安全地重置检查器状态"""
-        with self._checker_lock:
-            if self.checker:
-                self.checker.reset()
+        self.reset_pipeline()
+
+    def invalidate_analysis(self):
+        """Must be called under pipeline_lock when changing board state."""
+        self.analysis_token += 1
+        engine = self.get_engine()
+        if engine:
+            engine.stop_analysis()
+
+    def reset_pipeline(self):
+        """Invalidate frames, model caches, turn and callbacks together."""
+        with self.pipeline_lock:
+            self.invalidate_analysis()
+            self.discard_before_timestamp = time.time_ns()
+            self.session = BoardSession()
+            self.reset_recognizer()
+            with self._checker_lock:
+                if self.checker:
+                    self.checker.reset()
+            self.history.clear()
+            self.base_fen = None
+            from app.chess.message import Message, MessageType
+            from app.chess.message_bus import message_bus
+            for kind, content, kwargs in (
+                (MessageType.MOVE_TEXT, '', {}),
+                (MessageType.MOVE_CODE, '', {'is_red': True}),
+                (MessageType.STATUS, '正在重新识别棋盘...', {}),
+            ):
+                message_bus.publish(Message(kind, content, analysis_token=self.analysis_token, **kwargs))
 
     def get_recognizer(self) -> Optional[object]:
         """线程安全地获取识别器"""
@@ -428,4 +461,4 @@ def get_context():
     return _context_instance
 
 # 为了向后兼容，保留context变量
-context = get_context() 
+context = get_context()

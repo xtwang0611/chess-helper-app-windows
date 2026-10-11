@@ -97,186 +97,25 @@ class ChessRecognizer:
             pieceArray = [["-"] * len(x_array) for _ in range(len(y_array))]
         return pieceArray
 
+    def reset(self):
+        from app.chess.grid_recognition import GridClassifier
+        self.grid_classifier = GridClassifier()
+        self.last_grid_hashes = None
+        self.last_board_array = None
+        self.last_marker_coords = []
+
     def recognize_piece_from_grid(self, img, x_array, y_array):
-        """
-        切割棋盘格点识别棋子，返回9x10棋盘数组和红黑方
-        Args:
-            img: 原始图像
-            x_array: 棋盘横线坐标数组
-            y_array: 棋盘纵线坐标数组
-        Returns:
-            (pieceArray, marker_coords, current_grid_hashes): 
-                pieceArray: 9x10的二维数组
-                marker_coords: 标记坐标 (由CNN识别的 '.' 类型)
-                current_grid_hashes: 哈希
-        """
-        from app.tools.utils import compute_image_hash
-
-        # 使用内部缓存
-        last_grid_hashes = self.last_grid_hashes
-        last_board_array = self.last_board_array
-        last_marker_coords = self.last_marker_coords or []
-
-        # 预处理
-        resized_img, gray = self.preprocess_image(img)
-        
-        # 初始化结果数组
-        pieceArray = [["-"] * len(x_array) for _ in range(len(y_array))]
-        current_grid_hashes = [([None] * len(x_array)) for _ in range(len(y_array))]
-        
-        # CNN检测到的标记位置 (替代 marker_detector)
-        marker_coords = []
-        
-        # 收集识别过程中的错误/警告
-        details = []
-        
-        # 创建保存目录
-        save_dir = app_cache_path("pieces")
-        try:
-            os.makedirs(save_dir, exist_ok=True)
-        except OSError:
-            # 如果无法创建目录，跳过保存调试图片
-            save_dir = None
-        
-        # 准备批量识别
-        crops = []
-        positions = []  # 与 crops 对应，存 (i, j)
-        
-        # 统计增量识别效果
-        cached_count = 0
-        predicted_count = 0
-        
-        for i in range(len(y_array)):
-            for j in range(len(x_array)):
-                center_x = x_array[j]
-                center_y = y_array[i]
-                # 计算当前位置的切割半径
-                if j == 0:
-                    x_radius = (x_array[j+1] - x_array[j]) // 2
-                elif j == len(x_array)-1:
-                    x_radius = (x_array[j] - x_array[j-1]) // 2
-                else:
-                    x_radius = min((x_array[j] - x_array[j-1]) // 2, (x_array[j+1] - x_array[j]) // 2)
-                if i == 0:
-                    y_radius = (y_array[i+1] - y_array[i]) // 2
-                elif i == len(y_array)-1:
-                    y_radius = (y_array[i] - y_array[i-1]) // 2
-                else:
-                    y_radius = min((y_array[i] - y_array[i-1]) // 2, (y_array[i+1] - y_array[i]) // 2)
-                cut_radius = int((x_radius + y_radius) // 2 * 0.95)
-                adjusted_center_x = max(cut_radius, min(resized_img.shape[1] - 1 - cut_radius, center_x))
-                adjusted_center_y = max(cut_radius, min(resized_img.shape[0] - 1 - cut_radius, center_y))
-                x1 = adjusted_center_x - cut_radius
-                y1 = adjusted_center_y - cut_radius
-                x2 = adjusted_center_x + cut_radius
-                y2 = adjusted_center_y + cut_radius
-                piece_img = resized_img[y1:y2, x1:x2]
-                
-                # 计算当前格子的哈希
-                curr_hash = compute_image_hash(piece_img)
-                current_grid_hashes[i][j] = curr_hash
-                
-                # 检查缓存命中
-                is_hit = False
-                if last_grid_hashes and last_board_array and curr_hash:
-                    last_h = last_grid_hashes[i][j]
-                    if last_h == curr_hash:
-                        pieceArray[i][j] = last_board_array[i][j]
-                        # 如果上一帧该位置是标记，继续保留标记状态
-                        if (i, j) in last_marker_coords:
-                            marker_coords.append((i, j))
-                        is_hit = True
-                        cached_count += 1
-                
-                # 未命中缓存，加入待识别队列
-                if not is_hit:
-                    crops.append(piece_img)
-                    positions.append((i, j))
-                    predicted_count += 1
-        
-        if crops:
-            logger.debug(f"增量识别: 缓存命中 {cached_count} 格, 哈希变动(重算) {predicted_count} 格")
-            batch_results = self.context.piece_recognizer.recognize_batch(crops)
-            for idx, res in enumerate(batch_results):
-                i, j = positions[idx]
-                if res is None:
-                    details.append(RecognitionDetail(
-                        type=RecognitionErrorType.UNKNOWN,
-                        position=(i, j),
-                        message=f"批量识别失败: 结果为None at ({i},{j})",
-                        confidence=0.0
-                    ))
-                    continue
-                    
-                piece_type = res['class_name']
-                confidence = res['confidence']
-                
-                if piece_type and confidence > 0.6:
-                    if piece_type == 'covered':
-                        details.append(RecognitionDetail(
-                            type=RecognitionErrorType.COVERED,
-                            position=(i, j),
-                            message=f"动画遮挡 at ({i},{j})",
-                            confidence=confidence,
-                            piece_type=piece_type
-                        ))
-                        # 动画遮挡时不更新棋盘状态,保留'-'
-                        continue
-                    
-                    # 检测标记：模型识别为 '.' 的位置
-                    if piece_type == '.':
-                        marker_coords.append((i, j))
-                        logger.debug(f"CNN检测到标记 at ({i+1}, {j+1}) conf={confidence:.2f}")  # 1-indexed for readability
-                        pieceArray[i][j] = '-'  # 标记位置的棋子标记为空
-                    else:
-                        pieceArray[i][j] = piece_type
-                        # 调试：显示非标记的识别结果，帮助排查漏检
-                        # print(f"Debug - CNN识别 ({i+1}, {j+1}): {piece_type} conf={confidence:.2f}")
-                else:
-                    # 低置信度：记录错误但仍填入预测结果 (Best Guess)
-                    details.append(RecognitionDetail(
-                        type=RecognitionErrorType.LOW_CONFIDENCE,
-                        position=(i, j),
-                        message=f"低置信度 at ({i},{j}): {piece_type} - {confidence:.2f}",
-                        confidence=confidence,
-                        piece_type=piece_type
-                    ))
-                    # 仍然填入预测结果,避免棋盘破洞
-                    if piece_type and piece_type not in ['covered', '.']:
-                        pieceArray[i][j] = piece_type
-        else:
-            # 全部命中缓存
-            # print("Debug - 全局缓存命中，跳过CNN识别")
-            pass
-
-        # 检查是否无标记 (新增 MARKER_MISSING 检测)
-        if not marker_coords:
-            details.append(RecognitionDetail(
-                type=RecognitionErrorType.MARKER_MISSING,
-                position=(-1, -1),
-                message=f"未检测到标记 (Hash变动: {predicted_count}格)",
-                confidence=1.0
-            ))
-        
-        # 检查是否巨大变化 (可能是结算画面)
-        if predicted_count > 45:
-            details.append(RecognitionDetail(
-                type=RecognitionErrorType.MASSIVE_CHANGE,
-                position=(-1, -1),
-                message=f"巨大变化 ({predicted_count}格)",
-                confidence=1.0
-            ))
-
-        # 打印时转换为 1-indexed 方便阅读
-        display_coords = [(r+1, c+1) for r, c in marker_coords]
-        logger.info(f"检测到 {len(marker_coords)} 个标记--------------------------------------{display_coords}")
-        
-        # 更新内部缓存
-        self.last_grid_hashes = current_grid_hashes
-        self.last_board_array = pieceArray
-        self.last_marker_coords = marker_coords  # 缓存标记位置
-        
-        return pieceArray, marker_coords, current_grid_hashes, details
+        if not hasattr(self, 'grid_classifier'):
+            self.reset()
+        board, hashes, uncertain = self.grid_classifier.recognize(
+            img, x_array, y_array, self.context.piece_recognizer, self.context.platform)
+        details = [RecognitionDetail(
+            RecognitionErrorType.LOW_CONFIDENCE, (r, c),
+            f"格点({r + 1},{c + 1})分类待确认: {piece} ({confidence:.2f})",
+            confidence, piece) for r, c, piece, confidence in uncertain]
+        self.last_board_array = board
+        self.last_grid_hashes = hashes
+        return board, [], hashes, details
 
     # 计算棋子坐标
     def get_piece_position(self, point, x_array, y_array):

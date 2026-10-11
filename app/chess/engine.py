@@ -3,6 +3,7 @@ import os
 import sys
 import subprocess
 import threading
+import queue
 from typing import Optional, Tuple, List, Callable
 from app.chess.message import Message, MessageType, MessageContent
 from app.chess.context import context
@@ -30,6 +31,7 @@ class ChessEngine:
         self.lock = threading.Lock()
         self.analysis_lock = threading.Lock()
         self.is_initialized = False
+        self.output_queue = queue.Queue()
         
     def _get_default_engine_path(self) -> str:
         """获取默认引擎路径"""
@@ -72,9 +74,20 @@ class ChessEngine:
                     self.engine_path,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                 )
+                self.output_queue = queue.Queue()
+                def read_stdout(process, output_queue):
+                    try:
+                        for line in process.stdout:
+                            output_queue.put(line.strip())
+                    finally:
+                        output_queue.put(None)
+                self._stdout_thread = threading.Thread(target=read_stdout, args=(self.process, self.output_queue),
+                                                       name='pikafish-stdout', daemon=True)
+                self._stdout_thread.start()
                 
                 self._initialize_engine()
                 self.is_initialized = True
@@ -83,6 +96,17 @@ class ChessEngine:
                 
             except Exception as e:
                 logger.error(f"启动引擎时出错：{e}")
+                if self.process and self.process.poll() is None:
+                    self.process.terminate()
+                    self.process.wait(timeout=2)
+                if self.process:
+                    if self.process.stdin:
+                        self.process.stdin.close()
+                    reader = getattr(self, '_stdout_thread', None)
+                    if reader:
+                        reader.join(timeout=1)
+                    if self.process.stdout and (reader is None or not reader.is_alive()):
+                        self.process.stdout.close()
                 self.process = None
                 self.is_initialized = False
                 return False
@@ -100,30 +124,32 @@ class ChessEngine:
         self._wait_for_response('readyok', timeout=1)
     
     def quit(self):
-        """停止引擎"""
+        """Close the process and pipes even if it has already exited."""
         with self.lock:
-            if self.process and self.process.poll() is None:
-                try:
-                    # 先尝试发送quit命令让引擎优雅退出
+            process = self.process
+            if process is None:
+                return
+            try:
+                if process.poll() is None:
                     self._send_command('quit')
-                    # 等待引擎进程自然结束
-                    self.process.wait(timeout=1)
-                except subprocess.TimeoutExpired:
-                    # 如果1秒内没结束，强制终止
-                    self.process.terminate()
-                    self.process.wait(timeout=2)
-                except Exception:
-                    # 如果发送命令失败，直接终止进程
-                    self.process.terminate()
-                    self.process.wait(timeout=2)
-                finally:
-                    # 如果进程仍然存在，强制杀死
-                    if self.process and self.process.poll() is None:
-                        self.process.kill()
-                        self.process.wait(timeout=1)
-                    self.process = None
-                    self.is_initialized = False
-                    logger.info("引擎已停止")
+                    try:
+                        process.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        process.terminate()
+                        process.wait(timeout=2)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=1)
+                if process.stdin:
+                    process.stdin.close()
+                reader = getattr(self, '_stdout_thread', None)
+                if reader:
+                    reader.join(timeout=1)
+                if process.stdout and (reader is None or not reader.is_alive()):
+                    process.stdout.close()
+                self.process = None
+                self.is_initialized = False
     
     def _send_command(self, command: str):
         """发送命令到引擎"""
@@ -151,16 +177,21 @@ class ChessEngine:
             return []
         
         lines = []
-        start_time = time.time()
+        start_time = time.monotonic()
         
-        while time.time() - start_time < timeout:
-            output = self.process.stdout.readline().strip()
+        while time.monotonic() - start_time < timeout:
+            try:
+                output = self.output_queue.get(timeout=max(.01, timeout - (time.monotonic() - start_time)))
+            except queue.Empty:
+                break
+            if output is None:
+                raise RuntimeError("引擎进程已退出")
             if output:
                 lines.append(output)
                 if keyword in output:
-                    break
+                    return lines
         
-        return lines
+        raise TimeoutError(f"引擎未响应 {keyword}（{timeout}秒）")
     
     def new_game(self):
         """开始新游戏"""
@@ -185,14 +216,14 @@ class ChessEngine:
                 cmd += f" moves {moves}"
         self._send_command(cmd)
 
-    def _go(self, param: str, value: str) -> Tuple[List[str], str, List[dict]]:
+    def _go(self, param: str, value: str, is_current=None) -> Tuple[List[str], str, List[dict]]:
         """
         发送go命令和读取结果
         """
         self._send_command(f"go {param} {value}")
-        return self._read_output_with_timeout(35)
+        return self._read_output_with_timeout(30, is_current)
 
-    def get_bestmove(self, fen: str, side: bool, display_callback: Optional[Callable] = None, *, use_startpos: bool = True, is_newgame: bool = False, moves: Optional[str] = None, multipv: int = 1) -> Tuple[str, str, List[str]]:
+    def get_bestmove(self, fen: str, side: bool, display_callback: Optional[Callable] = None, *, use_startpos: bool = True, is_newgame: bool = False, moves: Optional[str] = None, multipv: int = 1, is_current=None) -> Tuple[str, str, List[str]]:
         """获取最佳走法
         Returns:
             (best_move, fen_string, pvs_list)
@@ -202,24 +233,23 @@ class ChessEngine:
         
         # 尝试获取分析锁
         # 如果获取失败，说明有其他线程正在分析，发送stop尝试中断它
-        if not self.analysis_lock.acquire(blocking=False):
-            # print("Debug - 引擎正忙，尝试通过发送 stop 中断...")
-            self._send_command('stop')
-            # 阻塞等待，直到上一个任务释放锁
-            self.analysis_lock.acquire()
+        while not self.analysis_lock.acquire(timeout=.1):
+            if is_current and not is_current():
+                return '', '', []
             
         try:
+            if is_current and not is_current():
+                return '', '', []
             # 此时我们拥有独占锁 且 （如果有前任务）前任务已结束
             # 再次发送 stop 确保引擎状态 (对于某些情况可能多余，但比较稳妥)
             self._send_command('stop')
             
             # 设置 MultiPV
-            if multipv > 1:
-                self._send_command(f'setoption name MultiPV value {multipv}')
+            self._send_command(f'setoption name MultiPV value {multipv}')
             
             fen_string = ''
             if fen:
-                fen_string = fen + ' ' + ('w' if side else 'b')
+                fen_string = fen + ' ' + ('w' if side else 'b') + ' - - 0 1'
             engine_params = context.get_engine_params()
             param = engine_params.get('goParam', 'depth')
             value = engine_params.get(param, '20')
@@ -234,7 +264,7 @@ class ChessEngine:
                 self.new_game()
 
             self._position(fen_string, use_startpos=use_startpos, moves=moves)
-            lines, best_move, pvs = self._go(param, value)
+            lines, best_move, pvs = self._go(param, value, is_current)
 
             # 恢复 MultiPV 为 1 (以免影响后续正常思考)
             if multipv > 1:
@@ -276,7 +306,7 @@ class ChessEngine:
     
 
 
-    def _read_output_with_timeout(self, timeout: float = 1.0) -> Tuple[List[str], str, List[dict]]:
+    def _read_output_with_timeout(self, timeout: float = 1.0, is_current=None) -> Tuple[List[str], str, List[dict]]:
         """读取引擎输出，带超时控制
         Returns:
             lines: 所有输出行
@@ -287,10 +317,25 @@ class ChessEngine:
         best_move = ''
         pvs = {} # Key: multipv_id, Value: info_dict
         
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout:
-            output = self.process.stdout.readline().strip()
+        deadline = time.monotonic() + timeout
+        stopping = False
+        while True:
+            now = time.monotonic()
+            if not stopping and (now >= deadline or (is_current and not is_current())):
+                self.stop_analysis()
+                stopping = True
+                deadline = now + 2
+            if stopping and now >= deadline:
+                self.is_initialized = False
+                if self.process and self.process.poll() is None:
+                    self.process.terminate()
+                raise TimeoutError("引擎停止超时，请重新启动助手")
+            try:
+                output = self.output_queue.get(timeout=.1)
+            except queue.Empty:
+                continue
+            if output is None:
+                raise RuntimeError("引擎进程已退出")
             if output:
                 lines.append(output)
                 if output.startswith('info') and ' multipv ' in output and ' pv ' in output:

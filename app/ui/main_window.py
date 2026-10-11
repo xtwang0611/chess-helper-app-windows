@@ -27,6 +27,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self.lifecycle_lock = threading.Lock()
         self.setWindowTitle("象棋助手")
         
         # 获取屏幕信息
@@ -91,7 +92,6 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(self.spacing_base, self.spacing_base, self.spacing_base, self.spacing_base)
         
         # 初始化上下文
-        context.load_config()
         self.engine_params = context.get_engine_params()
         
         # 连接信号与槽
@@ -100,6 +100,7 @@ class MainWindow(QMainWindow):
         # 顶部文本显示区域
         self.text_display = QLabel()
         self.text_display.setAlignment(Qt.AlignCenter)
+        self.text_display.setWordWrap(True)
         self.text_display.setFont(QFont("Arial", 18, QFont.Bold))
         self.text_display.setFixedHeight(100)  # 设置固定高度
         self.text_display.setObjectName("textDisplay")
@@ -134,6 +135,16 @@ class MainWindow(QMainWindow):
         self.change_move_btn.setStyleSheet("")
         self.change_move_btn.clicked.connect(self.on_change_move)
         middle_buttons_layout.addWidget(self.change_move_btn)
+
+        self.turn_btn = QPushButton("轮次")
+        self.turn_btn.setFixedSize(65, 35)
+        self.turn_btn.setObjectName("secondary")
+        self.turn_btn.setToolTip("中残局首次识别后确认谁走；此后按实际落子自动切换")
+        self.turn_menu = QMenu(self)
+        self.turn_menu.addAction("现在我方走棋", lambda: self.on_confirm_turn(True))
+        self.turn_menu.addAction("现在对方走棋", lambda: self.on_confirm_turn(False))
+        self.turn_btn.setMenu(self.turn_menu)
+        middle_buttons_layout.addWidget(self.turn_btn)
         
         # 添加其他按钮
         self.start_btn = QPushButton("开始")
@@ -293,7 +304,7 @@ class MainWindow(QMainWindow):
         # 初始化线程和队列
         self.capture_thread = None
         # 初始化截图管理器
-        self.capture_manager = ChessCaptureManager()
+        self.capture_manager = None  # Start workers only when the user starts analysis.
         # 初始化手动定位器
         self.manual_positioner = ManualPositioner(self)
 
@@ -325,7 +336,8 @@ class MainWindow(QMainWindow):
             notify_always: 是否即使平台未变化也显示通知
             schedule_next: 如果未检测到，是否调度下一次检测（2秒后）
         """
-        print(f"DEBUG: check_platform_change is_running={self.is_running}, schedule_next={schedule_next}")
+        if self.is_running or self.is_stopping:
+            return
         try:
             # 1. 尝试查找当前平台窗口
             current_found = self.platform_detector.find_game_window(context.platform)
@@ -413,6 +425,9 @@ class MainWindow(QMainWindow):
 
     def on_start(self):
         """开始/停止按钮事件"""
+        if self.is_stopping:
+            self.update_text("正在停止，请稍候", MessageType.STATUS)
+            return
         if not self.is_running:
             # 点击开始时，再次确认一下平台并显示结果 (不需要轮询)
             self.check_platform_change(notify_always=True, schedule_next=False)
@@ -430,6 +445,9 @@ class MainWindow(QMainWindow):
         self.is_stopping = True
         # 立即更新UI状态
         self.is_running = False
+        context.analysis_token += 1  # Immediately reject queued callbacks on the UI thread.
+        if self.capture_manager:
+            self.capture_manager.stop_event.set()
         self.start_btn.setText("开始")
         
         # 清空界面状态
@@ -440,12 +458,11 @@ class MainWindow(QMainWindow):
         # 异步执行停止操作，避免阻塞UI
         def stop_worker():
             try:
-                # 只停止非Qt对象
-                if self.capture_manager is not None:
-                    self.capture_manager.stop_capture()  # 停止截图和工作线程
-                context.quit_engine()  # 线程安全地退出引擎
-                context.reset_checker() # 线程安全地重置检查器
-                context.history.clear()  # 停止时清空历史
+                with self.lifecycle_lock:
+                    if self.capture_manager is not None:
+                        self.capture_manager.stop_capture()
+                    context.quit_engine()
+                    context.reset_pipeline()
             except Exception as e:
                 print(f"停止操作失败: {e}")
             finally:
@@ -464,26 +481,22 @@ class MainWindow(QMainWindow):
         # 异步执行所有耗时操作，避免阻塞UI
         def start_worker():
             try:
-                # 强制停止旧实例，确保消息订阅被清理
-                if self.capture_manager is not None:
-                    self.capture_manager.stop_capture()  # 调用截图模块的方法停止
-                    self.capture_manager = None
+                with self.lifecycle_lock:
+                    if not self.is_running:
+                        return
+                    if self.capture_manager is not None:
+                        self.capture_manager.stop_capture()
+                    context.reset_pipeline()
+                    context.set_checker(PositionChecker())
+                    context.history = MoveHistory()
+                    self.capture_manager = ChessCaptureManager()
+                    self.capture_manager.start_capture()
+                    context.set_engine(ChessEngine())
+                    if not context.engine.start():
+                        message_bus.publish_status("引擎启动失败，仍可识别棋盘")
+                    if not self.is_running:
+                        return
 
-                # 关键：每次都new新的ChessCaptureManager，保证识别线程能重启
-                self.capture_manager = ChessCaptureManager()
-                self.capture_manager.start_capture()
-                
-                # 启动引擎
-                context.set_engine(ChessEngine())
-                if context.engine.start():
-                    print("引擎已启动")
-                else:
-                    print("引擎启动失败")
-                
-                # 初始化局面检查器和历史记录
-                context.set_checker(PositionChecker())
-                context.history = MoveHistory()
-                
                 # 执行主处理流程（阻塞调用）
                 self.capture_manager.main_process_flow()
             except Exception as e:
@@ -495,10 +508,16 @@ class MainWindow(QMainWindow):
 
     def check_queue(self):
         """检查结果队列"""
-        if not self.ui_message_queue.empty():
-            result = self.ui_message_queue.get()
+        for _ in range(100):
+            try:
+                result = self.ui_message_queue.get_nowait()
+            except queue.Empty:
+                break
 
             if isinstance(result, Message):
+                token = result.kwargs.get('analysis_token')
+                if token is not None and (token != context.analysis_token or not self.is_running):
+                    continue
                 if result.type == MessageType.STOP:
                     if not self.is_stopping:  # 防止手动停止与自动停止冲突
                         self.on_stop()
@@ -511,7 +530,7 @@ class MainWindow(QMainWindow):
                     self.update_text(result.content, result.type)
                 elif result.type == MessageType.PIECES:
                     # 更新棋子位置
-                    self.board_display.update_pieces(result.kwargs['array'])
+                    self.board_display.update_pieces(result.kwargs['array'], uncertain=result.kwargs.get('uncertain'))
                 elif result.type == MessageType.MOVE_CODE:
                     # 更新着法箭头
                     self.board_display.update_arrow(result.content, result.kwargs['is_red'])
@@ -765,35 +784,32 @@ class MainWindow(QMainWindow):
         return super().event(event)
 
     def on_manual_capture(self):
-        """手动触发一次完整的监控与截图流程"""
         if self.capture_manager and self.is_running:
-            # 设置手动触发标志
-            self.capture_manager.manual_trigger = True
-            # 执行一次完整的监控与截图流程
-            success = self.capture_manager.manually_capture_once()
-            if success:
-                self.update_text("重置数据并重新分析...", MessageType.STATUS)
-            else:
-                self.update_text("重置失败", MessageType.ERROR)
+            self.update_text("正在清空缓存并重新识别...", MessageType.STATUS)
+            threading.Thread(target=self.capture_manager.manually_capture_once, daemon=True).start()
         else:
             self.update_text("请先点击开始按钮", MessageType.STATUS)
 
+    def on_confirm_turn(self, ours):
+        if not self.is_running:
+            self.update_text("请先点击开始按钮", MessageType.STATUS)
+            return
+        session = context.session
+        def confirm():
+            with context.pipeline_lock:
+                if self.is_running and context.session is session:
+                    ChessProcess.from_context(context).confirm_turn(ours)
+        threading.Thread(target=confirm, daemon=True).start()
 
     def on_change_move(self):
-        """请求变招"""
-        try:
-             # 创建临时的 Processor 实例来处理请求
-             # 注意：状态（checker, history）是共享的，所以可以这样做
-             process = ChessProcess.from_context(context)
-             
-             # 异步执行，避免阻塞 UI
-             import threading
-             threading.Thread(target=process.request_alternative_move, daemon=True).start()
-             
-             self.update_text("正在计算变招...", MessageType.STATUS)
-        except Exception as e:
-             print(f"变招请求失败: {e}")
-             self.update_text(f"变招失败: {e}", MessageType.ERROR)
+        if not self.is_running:
+            return
+        session = context.session
+        def change():
+            with context.pipeline_lock:
+                if self.is_running and context.session is session:
+                    ChessProcess.from_context(context).request_alternative_move()
+        threading.Thread(target=change, daemon=True).start()
 
     def show_param_menu(self):
         """显示参数菜单"""
