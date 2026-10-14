@@ -156,6 +156,7 @@ def detect_board_grid(image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
     grid_gray = cv2.GaussianBlur(raw_gray, (3, 3), 0)
     edges = cv2.Canny(grid_gray, 45, 135)
     outline_edges = cv2.Canny(cv2.GaussianBlur(raw_gray, (5, 5), 0), 30, 100)
+    outline = _detect_board_outline(outline_edges)
     h, w = raw_gray.shape
     # Xiangqi verticals are intentionally interrupted at the river and can be
     # split again by pieces, so accept board-sized line segments rather than
@@ -163,7 +164,7 @@ def detect_board_grid(image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
     lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=max(28, min(w, h) // 11),
                             minLineLength=max(45, min(w, h) // 8), maxLineGap=max(8, min(w, h) // 24))
     if lines is None:
-        return _detect_board_outline(outline_edges)
+        return outline
     vertical, horizontal = [], []
     for x1, y1, x2, y2 in lines[:, 0]:
         dx, dy = abs(x2 - x1), abs(y2 - y1)
@@ -175,10 +176,19 @@ def detect_board_grid(image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
     xs = _best_regular_run(_cluster(vertical, tolerance), 9)
     ys = _best_regular_run(_cluster(horizontal, tolerance), 10)
     if xs is None or ys is None:
-        return _detect_board_outline(outline_edges)
+        return outline
     sx, sy = float(np.median(np.diff(xs))), float(np.median(np.diff(ys)))
     if abs(sx - sy) / max(sx, sy) > 0.25:
-        return None
+        return outline
+    if outline is not None:
+        # Spectator layouts place avatars/timers immediately beside a smaller
+        # board. Their edges can complete a false arithmetic progression shifted
+        # by one whole file. Cross-check the *intersections*, not the padded crop,
+        # against the independent wooden outline before trusting the grid.
+        ox, oy, ow, oh = outline
+        if (xs[0] < ox - sx * .15 or xs[-1] > ox + ow + sx * .15 or
+                ys[0] < oy - sy * .15 or ys[-1] > oy + oh + sy * .15):
+            return outline
     left = int(round(xs[0] - sx / 2))
     top = int(round(ys[0] - sy / 2))
     right = int(round(xs[-1] + sx / 2))
@@ -188,4 +198,4 @@ def detect_board_grid(image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
     region = {"left": left, "top": top, "width": right - left, "height": bottom - top}
     if validate_board_region(region)[0]:
         return left, top, right - left, bottom - top
-    return _detect_board_outline(outline_edges)
+    return outline

@@ -60,6 +60,9 @@ class ChessProcess:
                 local_errors = all(d.position[0] >= 0 and d.position[1] >= 0 for d in unsure)
                 reason = (f"{len(unsure)}处棋子待确认，正在重新识别" if local_errors else
                           "截图局部信息不足，正在重试")
+                report = self.recognizer.grid_classifier.last_report
+                if local_errors and report.get('source_cell_pixels', 100) < 28:
+                    reason += "（棋盘较小，建议放大游戏窗口）"
                 observation = session.invalidate(reason)
                 if (local_errors and session.board is None and len(unsure) <= 8 and
                         self.recognizer.grid_classifier.grid_supported):
@@ -89,7 +92,7 @@ class ChessProcess:
             if getattr(session, 'last_status', None) != reason:
                 session.last_status = reason
                 self.publish(MessageType.STATUS, reason)
-                logger.info(reason)
+                logger.bind(event="recognition-status").info(reason)
             return
         session.advice_suspended = False
         if observation.changed or observation.recovered:

@@ -61,8 +61,12 @@ def calibrate_grid(image, xs, ys):
 
 def centered_crop(image, x, y, radius):
     """Pad boundary squares; shifting the center cuts edge elephants in half."""
-    padded = cv2.copyMakeBorder(image, radius, radius, radius, radius, cv2.BORDER_REPLICATE)
-    return padded[y:y + radius * 2, x:x + radius * 2].copy()
+    h, w = image.shape[:2]
+    left, top, right, bottom = x - radius, y - radius, x + radius, y + radius
+    crop = image[max(0, top):min(h, bottom), max(0, left):min(w, right)]
+    # Copy only this square, not the entire 800px board 180 times per frame.
+    return cv2.copyMakeBorder(crop, max(0, -top), max(0, bottom - h),
+                             max(0, -left), max(0, right - w), cv2.BORDER_REPLICATE)
 
 
 def grid_visibility(image, xs, ys):
@@ -139,8 +143,11 @@ class GridClassifier:
 
     def recognize(self, frame, xs, ys, model, platform):
         raw = screenshot_to_bgr(frame)
+        # Strong Lanczos ringing around tiny strokes hurts the 80px classifier.
+        # Keep the existing path for normal boards; use cubic for small boards.
+        interpolation = cv2.INTER_CUBIC if raw.shape[1] < 360 else cv2.INTER_LANCZOS4
         image = cv2.resize(raw, (800, round(raw.shape[0] * 800 / raw.shape[1])),
-                           interpolation=cv2.INTER_LANCZOS4)
+                           interpolation=interpolation)
         key = (platform, raw.shape, tuple(xs), tuple(ys))
         if key != self.geometry:
             self.reset()
@@ -180,6 +187,44 @@ class GridClassifier:
                 distributions[r, c] = probs
                 self.cache[r, c] = digest, now, probs
 
+        # Infer orientation before choosing retries: a confident pawn on the
+        # wrong home rank can otherwise hide an uncertain advisor candidate.
+        votes = []
+        for (r, c), probs in distributions.items():
+            for piece in ('k', 'K'):
+                if probs.get(piece, 0.) > .75 and 3 <= c <= 5 and (r <= 2 or r >= 7):
+                    votes.append((piece == 'k') == (r <= 2))
+        red_bottom = votes[0] if votes and all(v == votes[0] for v in votes) else None
+
+        # At small resolutions, one source pixel shifts a character by several
+        # normalized pixels. Retry only ambiguous, freshly inferred squares;
+        # require agreement across crops rather than picking the highest score.
+        retry_positions = [(r, c, digest) for r, c, digest in positions
+                           if decode_square(distributions[r, c], r, c, red_bottom)[2]]
+        refined = 0
+        if raw.shape[1] < 360 and 0 < len(retry_positions) <= 16:
+            retry_crops = []
+            offset = max(2, round(radius * .08))
+            offsets = ((0, 0), (-offset, 0), (offset, 0), (0, -offset), (0, offset))
+            for r, c, _ in retry_positions:
+                retry_crops.extend(centered_crop(image, xx[c] + dx, yy[r] + dy,
+                                                 max(2, round(radius * .85)))
+                                   for dx, dy in offsets)
+            retries = model.recognize_batch(retry_crops)
+            for i, (r, c, digest) in enumerate(retry_positions):
+                votes = [distribution(result) for result in retries[i*5:i*5+5]]
+                if len(votes) != 5 or not all(votes):
+                    continue
+                labels = set().union(*(vote.keys() for vote in votes))
+                mean = {p: sum(vote.get(p, 0.) for vote in votes) / 5 for p in labels}
+                piece, _, unsure = decode_square(mean, r, c, red_bottom)
+                agreement = sum(max(vote, key=vote.get) == piece and vote.get(piece, 0.) >= .75
+                                for vote in votes)
+                if not unsure and piece != '-' and agreement >= 3:
+                    distributions[r, c] = mean
+                    self.cache[r, c] = digest, now, mean
+                    refined += 1
+
         # Infer orientation only from unambiguous king evidence anywhere inside either palace.
         votes = []
         for (r, c), probs in distributions.items():
@@ -201,8 +246,13 @@ class GridClassifier:
         if not frame_reliable:
             uncertain.append((-1, -1, '?', 0.))
         self.last_report = {'x': xx, 'y': yy, 'grid_supported': supported,
+                            'source_size': [raw.shape[1], raw.shape[0]],
+                            'source_cell_pixels': round(float(min(
+                                np.median(np.diff(xx)) * raw.shape[1] / image.shape[1],
+                                np.median(np.diff(yy)) * raw.shape[0] / image.shape[0])), 2),
                             'visibility': visibility,
                             'frame_reliable': frame_reliable,
                             'red_bottom': red_bottom, 'cells': cells,
+                            'refined_squares': refined,
                             'inferred_squares': len(positions), 'board': board}
         return board, hashes, uncertain

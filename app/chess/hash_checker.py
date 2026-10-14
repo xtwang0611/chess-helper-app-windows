@@ -3,6 +3,9 @@ import imagehash
 import numpy as np
 import cv2
 from collections import deque
+from app.tools.log_config import get_logger
+
+logger = get_logger(__name__)
 
 # 说明：
 # 该模块提供一个基于帧哈希波动的"倒计时边框"近似检测方案。
@@ -78,13 +81,13 @@ class StableFrameDetector:
                 diff = (self.last_log_hash - curr_hash)
                 # print(f"{log_prefix} board hash diff: {diff}")
             else:
-                print(f"{log_prefix} first board frame (no previous hash)")
+                logger.debug(f"{log_prefix} first board frame (no previous hash)")
             self.last_log_hash = curr_hash
 
             stable_frame = self.update(pil_img, force_output=force_output)
             return stable_frame, curr_hash
         except Exception as e:
-            print(f"{log_prefix} hash diff calc failed: {e}")
+            logger.warning(f"{log_prefix} hash diff calc failed: {e}")
             return None, None
 
 

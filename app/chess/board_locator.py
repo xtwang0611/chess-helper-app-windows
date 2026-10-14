@@ -854,10 +854,12 @@ class BoardLocator:
 
     def _locate_board(self):
         try:
-            return self._locate_board_from_combs()
-        except (PieceError, CombsError) as exc:
-            self.logger.warning(f"棋子组合定位失败，尝试网格定位: {exc}")
+            # Grid/outline geometry works in spectator layouts and endgames,
+            # without assuming kings or pawns still occupy starting squares.
             return self._locate_board_from_grid()
+        except CombsError as exc:
+            self.logger.debug(f"网格定位失败，尝试棋子组合定位: {exc}")
+            return self._locate_board_from_combs()
 
     def _process_circles(self, circles, img_np):
         """处理圆检测（单线程版本，避免模型访问冲突）"""

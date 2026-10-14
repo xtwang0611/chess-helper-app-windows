@@ -4,29 +4,48 @@
 """
 import sys
 import os
+import threading
+import time
+from collections import OrderedDict
 from loguru import logger
 
 # 移除默认的 handler
 logger.remove()
 
-# 允许显示日志的模块列表（可根据需要修改）
-ENABLED_MODULES = [
-    "app.chess.checker",
-    "app.chess.processor", 
-    # "app.chess.recognizer",
-]
+class ConsoleRateLimit:
+    """Bound recurring messages without hiding the first error or a new error."""
+    def __init__(self, interval=10., clock=time.monotonic):
+        self.interval, self.clock = interval, clock
+        self.seen = OrderedDict()
+        self.lock = threading.Lock()
 
-def _module_filter(record):
-    """过滤器：只允许指定模块的日志"""
-    name = record["extra"].get("name", "")
-    return any(module in name for module in ENABLED_MODULES)
+    def __call__(self, record):
+        extra = record['extra']
+        key = (extra.get('name', record['name']), record['level'].name,
+               extra.get('event') or record['message'])
+        now = self.clock()
+        with self.lock:
+            previous = self.seen.get(key)
+            if previous is not None and now - previous < self.interval:
+                return False
+            self.seen[key] = now
+            self.seen.move_to_end(key)
+            if len(self.seen) > 256:
+                self.seen.popitem(last=False)
+        return True
+
+
+CONSOLE_LEVEL = os.environ.get('CHESS_LOG_LEVEL', 'INFO').upper()
+if CONSOLE_LEVEL not in ('TRACE', 'DEBUG', 'INFO', 'SUCCESS', 'WARNING', 'ERROR', 'CRITICAL'):
+    CONSOLE_LEVEL = 'INFO'
+console_rate_limit = ConsoleRateLimit()
 
 # 控制台输出配置
 logger.add(
     sys.stderr,
-    level="DEBUG",
+    level=CONSOLE_LEVEL,
     format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{extra[name]}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
-    filter=_module_filter,
+    filter=None if CONSOLE_LEVEL in ('TRACE', 'DEBUG') else console_rate_limit,
     colorize=True
 )
 

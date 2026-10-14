@@ -180,11 +180,11 @@ class PositionChecker:
         # 状态更新逻辑
         if has_black_king and not has_red_king:
             if not self.is_red:
-                logger.info("Side Detection: Detected Black King at top -> I am RED")
+                logger.debug("Side Detection: Detected Black King at top -> I am RED")
             self.is_red = True
         elif has_red_king and not has_black_king:
             if self.is_red:
-                logger.info("Side Detection: Detected Red King at top -> I am BLACK")
+                logger.debug("Side Detection: Detected Red King at top -> I am BLACK")
             self.is_red = False
         # else: 如果都没检测到，或都检测到了(异常)，保持 is_red 不变
 
