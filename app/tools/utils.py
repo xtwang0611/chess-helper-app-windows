@@ -5,6 +5,18 @@ import platform
 from PIL import Image
 import imagehash
 
+
+def config_path():
+    """Source keeps its existing config; frozen builds use a writable user copy."""
+    source = resource_path('json', 'game_config.json')
+    if not getattr(sys, 'frozen', False):
+        return source
+    target = app_data_path('game_config.json')
+    if not os.path.exists(target):
+        import shutil
+        shutil.copyfile(source, target)
+    return target
+
 # 管理开发环境与打包环境下的路径
 def resource_path(*path_parts):
     """获取资源文件的绝对路径

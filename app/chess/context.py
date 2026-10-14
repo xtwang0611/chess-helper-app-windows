@@ -147,7 +147,7 @@ class ChessContext:
         """从配置文件加载所有设置"""
         try:
             logger.info("开始加载配置文件...")
-            with open(utils.resource_path("json", "game_config.json"), "r") as f:
+            with open(utils.config_path(), "r", encoding="utf-8") as f:
                 config = json.load(f)
                 
             # 初始化平台
@@ -249,9 +249,9 @@ class ChessContext:
             config = utils.convert_to_builtin_type(config)
             
             # 使用原子写入避免文件损坏
-            path = utils.resource_path("json", "game_config.json")
+            path = utils.config_path()
             tmp_path = path + ".tmp"
-            with open(tmp_path, "w") as f:
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=4)
             os.replace(tmp_path, path)  # 原子覆盖
             logger.info("配置文件保存成功")

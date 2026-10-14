@@ -36,6 +36,10 @@ class ChessEngine:
     def _get_default_engine_path(self) -> str:
         """获取默认引擎路径"""
         from app.tools.utils import app_data_path
+        if os.name == 'nt':
+            bundled = resource_path('Pikafish', 'src', 'pikafish.exe')
+            if os.path.isfile(bundled):
+                return bundled
         
         # 优先使用用户数据目录中的引擎文件
         user_engine_path = app_data_path("Pikafish/pikafish")
@@ -76,6 +80,7 @@ class ChessEngine:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
+                    cwd=os.path.dirname(os.path.abspath(self.engine_path)),
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                 )
                 self.output_queue = queue.Queue()
@@ -115,6 +120,9 @@ class ChessEngine:
         """初始化引擎设置"""
         self._send_command('uci')
         self._wait_for_response('uciok', timeout=1)
+        nnue = os.path.join(os.path.dirname(os.path.abspath(self.engine_path)), 'pikafish.nnue')
+        if os.path.isfile(nnue):
+            self._send_command(f'setoption name EvalFile value {nnue}')
         
         self._send_command(f'setoption name Threads value {self.threads}')
         self._send_command(f'setoption name Hash value {self.hash_size}')

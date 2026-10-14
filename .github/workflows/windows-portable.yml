@@ -1,0 +1,44 @@
+name: Windows portable (manual preview)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: x64
+      - run: python -m pip install -r requirements-windows.txt pyinstaller==6.16.0
+      - name: Download official engine release
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/official-pikafish/Pikafish/releases/download/Pikafish-2026-09-06/Pikafish.2026-09-06.7z -OutFile engine.7z
+          7z x engine.7z -oengine-release
+          if ($LASTEXITCODE -ne 0) { throw 'Engine extraction failed' }
+      - name: Build preview
+        shell: pwsh
+        run: |
+          $engineDir = (Get-ChildItem engine-release -Recurse -Filter Pikafish-Windows-x86-64-universal.exe | Select-Object -First 1).Directory.FullName
+          python scripts/build_windows.py --engine-release-dir "$engineDir"
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
+      - name: Smoke test packaged app
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem dist -Recurse -Filter ChessHelper.exe | Select-Object -First 1).FullName
+          $report = Join-Path $env:RUNNER_TEMP 'portable-test.json'
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $process = Start-Process -FilePath $exe -ArgumentList @('--self-test', $report) -WindowStyle Hidden -PassThru
+          if (-not $process.WaitForExit(120000)) { $process.Kill(); throw 'Smoke test timed out' }
+          if ($process.ExitCode -ne 0 -or -not (Test-Path $report)) { throw 'Smoke test failed; inspect startup-error.txt' }
+          Get-Content $report
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ChessHelper-Windows-x64-preview
+          path: |
+            dist/**/*.zip
+            dist/**/*.sha256
+          retention-days: 14

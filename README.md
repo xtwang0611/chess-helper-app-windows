@@ -5,7 +5,7 @@
 >
 > 本分支新增 Windows 依赖清单、Pikafish Windows 引擎接入，以及天天象棋窄窗口和 Windows 截图坐标兼容。
 
-一款智能的中国象棋辅助工具，支持微信小程序平台 **JJ象棋** 和 **天天象棋** 直接使用，无需使用改造的官方客户端，无封号风险。利用计算机视觉技术和强大的Pikafish象棋引擎，为您提供实时的局势分析与着法推荐。
+一款中国象棋辅助工具，支持微信小程序平台 **JJ象棋** 和 **天天象棋**，利用计算机视觉与 Pikafish 提供局势分析及着法推荐。请用于合规的学习和本地分析，遵守游戏平台规则；不承诺没有账号风险。
 
 ---
 
@@ -50,7 +50,13 @@
 -   Windows 10/11（Windows 适配建议使用 Python 3.11）
 
 ### 快速开始
--   下载安装客户端dmg文件
+
+本仓库同时保留两种使用方式：
+
+- **普通 Windows 用户**：使用 Windows x64 完整 ZIP，解压后双击 `ChessHelper.exe`。不需要 Python、conda、VS Code 或 MaaFramework。不能只复制 exe，必须保留 `_internal` 文件夹。发布包需经测试后上传 [Releases](https://github.com/xtwang0611/chess-helper-app-windows/releases)；GitHub 的 `Source code.zip` 不是成品。
+- **开发者**：克隆本仓库，按下方“Windows 运行方法”安装依赖，以 `python app/main.py` 运行。源码与构建脚本保持开源。
+
+详细说明、配置/日志位置、构建与验收步骤见 [Windows 解压版](docs/windows-portable.md)。
 
 ### 自行编译
 -   若有兴趣和技术能力，可以参考Pikafish开源引擎文档，自行编译Windows平台的引擎文件：https://github.com/official-pikafish/Pikafish
@@ -73,15 +79,10 @@
 
    ```text
    app/Pikafish/src/pikafish.exe
-   app/Pikafish/src/pikafish
    app/Pikafish/src/pikafish.nnue
    ```
 
-   其中无扩展名的 `pikafish` 可由 Windows 可执行文件复制得到：
-
-   ```powershell
-   Copy-Item '.\app\Pikafish\src\pikafish.exe' '.\app\Pikafish\src\pikafish'
-   ```
+   Windows 直接使用 `pikafish.exe`，无需额外复制无扩展名文件。
 
 3. 启动程序：
 

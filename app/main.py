@@ -29,6 +29,9 @@ QLoggingCategory.setFilterRules("qt.gui.icc.warning=false")
 
 def _ensure_engine_files():
     """静默确保引擎文件存在于用户数据目录中"""
+    if os.name == 'nt':
+        # Windows uses the exe/NNUE shipped together, never a stale user copy.
+        return
     try:
         from app.tools.utils import app_data_path, resource_path
         import shutil
